@@ -86,6 +86,60 @@ class StatusChannelDecoder:
         if handler is not None:
             handler(self, data)
 
+    def is_known_channel(self, channel: int) -> bool:
+        return channel in self._handlers
+
+    def summarize_channel(self, channel: int, data: bytes) -> dict[str, object]:
+        summary: dict[str, object] = {
+            "known_channel": self.is_known_channel(channel),
+            "status_channel": channel,
+            "status_data_hex": data.hex(),
+        }
+        if channel == 0:
+            summary.update(
+                {
+                    "num_satellites": self.num_satellites,
+                    "gnss_pos_mode": self.gnss_pos_mode,
+                    "gnss_vel_mode": self.gnss_vel_mode,
+                    "gnss_att_mode": self.gnss_att_mode,
+                }
+            )
+        elif channel == 3:
+            summary.update(
+                {
+                    "position_accuracy_age": self.position_accuracy_age,
+                    "position_accuracy": dict(self.position_accuracy),
+                }
+            )
+        elif channel == 4:
+            summary.update(
+                {
+                    "velocity_accuracy_age": self.velocity_accuracy_age,
+                    "velocity_accuracy": dict(self.velocity_accuracy),
+                }
+            )
+        elif channel == 5:
+            summary.update(
+                {
+                    "orientation_accuracy_age": self.orientation_accuracy_age,
+                    "orientation_accuracy": dict(self.orientation_accuracy),
+                }
+            )
+        elif channel == 78:
+            summary.update({"can_status": dict(self.can_status)})
+        elif channel == 95:
+            stream_id = data[0]
+            stream = self.gad_streams.get(stream_id)
+            summary.update(
+                {
+                    "stream_id": stream_id,
+                    "rejection_count": None if stream is None else stream.rejection_count,
+                    "innovations": None if stream is None else list(stream.innovations),
+                    "gad_timestamp_ms": None if stream is None else stream.timestamp_ms,
+                }
+            )
+        return summary
+
     def _decode_ch0_gnss_mode(self, data: bytes) -> None:
         num_sats = data[4]
         pos_mode = data[5]

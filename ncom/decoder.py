@@ -59,6 +59,24 @@ class NcomPacket:
     checksum_valid: tuple[bool, bool, bool]
 
 
+@dataclass(slots=True)
+class DecodeDiagnostics:
+    packet_index: int
+    input_size: int
+    len_ok: bool
+    sync_ok: bool
+    nav_status: int | None
+    reject_reason: str | None
+    checksum_valid: tuple[bool, bool, bool] | None
+    checksum_warning: bool
+    status_channel: int | None
+    status_data_hex: str | None
+    known_channel: bool
+    timestamp_ms: int | None
+    warnings: list[str]
+    status_summary: dict[str, object]
+
+
 class NcomDecoder:
     """Decode fixed-length NCOM structure-A packets."""
 
@@ -76,22 +94,78 @@ class NcomDecoder:
         return self._error_count
 
     def decode(self, data: bytes) -> NcomPacket | None:
+        packet, _ = self.decode_with_diagnostics(data)
+        return packet
+
+    def decode_with_diagnostics(self, data: bytes) -> tuple[NcomPacket | None, DecodeDiagnostics]:
+        packet_index = self._packet_count + self._error_count
+        warnings: list[str] = []
+
         if len(data) != NCOM_PACKET_LENGTH:
             self._error_count += 1
-            return None
-        if data[0] != NCOM_SYNC:
+            return None, DecodeDiagnostics(
+                packet_index=packet_index,
+                input_size=len(data),
+                len_ok=False,
+                sync_ok=False,
+                nav_status=None,
+                reject_reason="invalid_length",
+                checksum_valid=None,
+                checksum_warning=False,
+                status_channel=None,
+                status_data_hex=None,
+                known_channel=False,
+                timestamp_ms=None,
+                warnings=["invalid_length"],
+                status_summary={},
+            )
+
+        sync_ok = data[0] == NCOM_SYNC
+        if not sync_ok:
             self._error_count += 1
-            return None
+            return None, DecodeDiagnostics(
+                packet_index=packet_index,
+                input_size=len(data),
+                len_ok=True,
+                sync_ok=False,
+                nav_status=None,
+                reject_reason="invalid_sync",
+                checksum_valid=None,
+                checksum_warning=False,
+                status_channel=None,
+                status_data_hex=None,
+                known_channel=False,
+                timestamp_ms=None,
+                warnings=["invalid_sync"],
+                status_summary={},
+            )
 
         nav_status = data[21]
         if nav_status == 11:
-            return None
+            return None, DecodeDiagnostics(
+                packet_index=packet_index,
+                input_size=len(data),
+                len_ok=True,
+                sync_ok=True,
+                nav_status=nav_status,
+                reject_reason="nav_status_11",
+                checksum_valid=None,
+                checksum_warning=False,
+                status_channel=None,
+                status_data_hex=None,
+                known_channel=False,
+                timestamp_ms=None,
+                warnings=["nav_status_11"],
+                status_summary={},
+            )
 
         cs_valid = (
             verify_checksum(data, 1),
             verify_checksum(data, 2),
             verify_checksum(data, 3),
         )
+        if not all(cs_valid):
+            warnings.append("checksum_warn")
 
         timestamp_ms = struct.unpack_from("<H", data, 1)[0]
         acc_x = decode_int24_le(data[3:6]) * ACC2MPS2
@@ -113,10 +187,14 @@ class NcomDecoder:
 
         status_ch = data[62]
         status_data = data[63:71]
+        known_channel = self.status_decoder.is_known_channel(status_ch)
+        if not known_channel:
+            warnings.append("unknown_channel")
         self.status_decoder.decode(status_ch, status_data)
+        status_summary = self.status_decoder.summarize_channel(status_ch, status_data)
 
         self._packet_count += 1
-        return NcomPacket(
+        packet = NcomPacket(
             timestamp_ms=timestamp_ms,
             nav_status=nav_status,
             nav_status_name=NAV_STATUS.get(nav_status, f"Unknown({nav_status})"),
@@ -138,4 +216,20 @@ class NcomDecoder:
             status_channel=status_ch,
             status_data=status_data,
             checksum_valid=cs_valid,
+        )
+        return packet, DecodeDiagnostics(
+            packet_index=packet_index,
+            input_size=len(data),
+            len_ok=True,
+            sync_ok=True,
+            nav_status=nav_status,
+            reject_reason=None,
+            checksum_valid=cs_valid,
+            checksum_warning=not all(cs_valid),
+            status_channel=status_ch,
+            status_data_hex=status_data.hex(),
+            known_channel=known_channel,
+            timestamp_ms=timestamp_ms,
+            warnings=warnings,
+            status_summary=status_summary,
         )

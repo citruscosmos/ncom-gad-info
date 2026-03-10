@@ -7,6 +7,8 @@ import struct
 
 from ncom.decoder import NcomDecoder, decode_int24_le, verify_checksum
 from ncom.status_channels import decode_innovation
+from receiver.file_replay import extract_ncom_packets
+from receiver.udp_receiver import ReceiverState, append_decode_diagnostics, reset_receiver_state
 
 
 def _encode_int24(value: int) -> bytes:
@@ -124,6 +126,56 @@ def test_decode_ch95_gad_info() -> None:
     assert info.innovations[0] is not None
 
 
+def test_decode_ch3_and_ch5_accuracy() -> None:
+    decoder = NcomDecoder()
+
+    ch3_data = struct.pack("<HHHBB", 100, 200, 300, 20, 0)
+    packet = decoder.decode(_make_packet(status_channel=3, status_data=ch3_data))
+    assert packet is not None
+    pos = decoder.status_decoder.position_accuracy
+    assert math.isclose(pos["north"], 0.1, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(pos["east"], 0.2, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(pos["down"], 0.3, rel_tol=0, abs_tol=1e-12)
+    assert decoder.status_decoder.position_accuracy_age == 20
+
+    ch5_data = struct.pack("<HHHBB", 10, 20, 30, 20, 0)
+    packet = decoder.decode(_make_packet(status_channel=5, status_data=ch5_data))
+    assert packet is not None
+    ori = decoder.status_decoder.orientation_accuracy
+    assert math.isclose(ori["heading"], 10e-5, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(ori["pitch"], 20e-5, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(ori["roll"], 30e-5, rel_tol=0, abs_tol=1e-12)
+    assert decoder.status_decoder.orientation_accuracy_age == 20
+
+
+def test_extract_ncom_packets_with_sync_recovery() -> None:
+    packet_a = _make_packet(status_channel=4, status_data=struct.pack("<HHHBB", 1, 2, 3, 1, 0))
+    packet_b = _make_packet(status_channel=95, status_data=b"\x01\x00\x03\x03\x03\x00\x00\x00")
+    raw = b"\x00\x11\x22" + packet_a + b"\x99\x88" + packet_b + b"\x77"
+    packets = extract_ncom_packets(raw)
+    assert len(packets) == 2
+    assert packets[0][0] == 0xE7
+    assert packets[1][0] == 0xE7
+
+
+def test_reset_receiver_state() -> None:
+    state = ReceiverState()
+    state.vel_acc_north = 0.1
+    state.packet_count = 99
+    state.last_error = "x"
+    state.position_history.append((35.0, 139.0))
+    state.playback_total_packets = 10
+    state.playback_current_packet = 5
+    reset_receiver_state(state)
+    assert state.vel_acc_north is None
+    assert state.packet_count == 0
+    assert len(state.position_history) == 0
+    assert state.playback_total_packets == 0
+    assert state.playback_current_packet == 0
+    # Caller controls whether to keep/clear errors.
+    assert state.last_error == "x"
+
+
 def test_decode_ch78_can_status() -> None:
     status_data = struct.pack("<HHBBBB", 100, 200, 98, 97, 3, 42)
     decoder = NcomDecoder()
@@ -143,3 +195,50 @@ def test_navstatus_11_is_ignored() -> None:
     decoder = NcomDecoder()
     packet = decoder.decode(_make_packet(nav_status=11))
     assert packet is None
+
+
+def test_decode_with_diagnostics_unknown_channel() -> None:
+    decoder = NcomDecoder()
+    raw = _make_packet(status_channel=42, status_data=b"\x01\x02\x03\x04\x05\x06\x07\x08")
+    packet, diag = decoder.decode_with_diagnostics(raw)
+    assert packet is not None
+    assert diag.status_channel == 42
+    assert not diag.known_channel
+    assert "unknown_channel" in diag.warnings
+    assert diag.status_data_hex == "0102030405060708"
+
+
+def test_decode_with_diagnostics_checksum_warning() -> None:
+    decoder = NcomDecoder()
+    broken = bytearray(_make_packet(status_channel=4, status_data=struct.pack("<HHHBB", 10, 20, 30, 1, 0)))
+    broken[40] ^= 0xFF
+    packet, diag = decoder.decode_with_diagnostics(bytes(broken))
+    assert packet is not None
+    assert diag.checksum_valid is not None
+    assert not all(diag.checksum_valid)
+    assert diag.checksum_warning
+    assert "checksum_warn" in diag.warnings
+
+
+def test_decode_with_diagnostics_invalid_length() -> None:
+    decoder = NcomDecoder()
+    packet, diag = decoder.decode_with_diagnostics(b"\xE7\x00")
+    assert packet is None
+    assert not diag.len_ok
+    assert diag.reject_reason == "invalid_length"
+
+
+def test_append_decode_diagnostics_for_udp() -> None:
+    state = ReceiverState()
+    state.diagnostics_enabled = True
+    decoder = NcomDecoder()
+    packet, diag = decoder.decode_with_diagnostics(
+        _make_packet(status_channel=4, status_data=struct.pack("<HHHBB", 12, 34, 56, 200, 0))
+    )
+    assert packet is not None
+    append_decode_diagnostics(state, diag)
+    assert len(state.diagnostics_buffer) == 1
+    row = state.diagnostics_buffer[-1]
+    assert row["status_channel"] == 4
+    assert "stale_accuracy" in row["warnings"]
+    assert state.diagnostics_warning_count == 1

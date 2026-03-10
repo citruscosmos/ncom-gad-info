@@ -70,6 +70,26 @@ def _make_ch4_data(seq: int) -> bytes:
     return struct.pack("<HHHBB", north_mmps, east_mmps, down_mmps, age, blended)
 
 
+def _make_ch3_data(seq: int) -> bytes:
+    base = 120 + 40 * math.sin(seq / 120.0)
+    north_mm = int(max(50, min(300, base)))
+    east_mm = int(max(50, min(300, base * 0.9)))
+    down_mm = int(max(50, min(300, base * 1.1)))
+    age = 8
+    reserved = 0
+    return struct.pack("<HHHBB", north_mm, east_mm, down_mm, age, reserved)
+
+
+def _make_ch5_data(seq: int) -> bytes:
+    base = 15 + 6 * math.sin(seq / 100.0)
+    heading = int(max(5, min(40, base)))
+    pitch = int(max(5, min(40, base * 0.8)))
+    roll = int(max(5, min(40, base * 1.2)))
+    age = 8
+    reserved = 0
+    return struct.pack("<HHHBB", heading, pitch, roll, age, reserved)
+
+
 def _make_ch78_data(seq: int) -> bytes:
     tx = seq % 65536
     rx = (seq - 1) % 65536
@@ -105,7 +125,7 @@ def main() -> None:
     parser.add_argument("--hz", type=float, default=100.0)
     args = parser.parse_args()
 
-    channels = [0, 4, 78, 95]
+    channels = [0, 3, 4, 5, 78, 95]
     interval = 1.0 / args.hz
     seq = 0
 
@@ -116,8 +136,12 @@ def main() -> None:
             ch = channels[seq % len(channels)]
             if ch == 0:
                 data = _make_ch0_data(seq)
+            elif ch == 3:
+                data = _make_ch3_data(seq)
             elif ch == 4:
                 data = _make_ch4_data(seq)
+            elif ch == 5:
+                data = _make_ch5_data(seq)
             elif ch == 78:
                 data = _make_ch78_data(seq)
             else:

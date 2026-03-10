@@ -1123,12 +1123,63 @@ if __name__ == "__main__":
 
 ---
 
-## 11. 将来の拡張候補（スコープ外だが設計で考慮）
+## 11. 拡張対応ロードマップ（第1弾を実装対象化）
 
-1. **位置精度・姿勢精度の表示追加** — Channel 3/5 は既にデコード対応済み
-2. **CSVエクスポート** — accuracy_history を pandas DataFrame として保存
-3. **アラート閾値の設定** — 精度がN mm/sを超えたら通知
-4. **マップ表示** — lat/lon を `st.map()` または `pydeck` で表示
-5. **NCOM録画ファイルの再生** — UDP受信の代わりにファイル読み込みモード
-6. **Innovation 時系列グラフ** — Channel 95 の innovation を時系列で表示
+本章のうち、以下3項目は「将来候補」から「実装対象」に昇格する。
+
+1. **位置精度・姿勢精度の表示追加**
+4. **マップ表示**
+5. **NCOM録画ファイルの再生**
+
+### 11.1 対応方針
+
+- 既存の UDP リアルタイム監視機能を維持したまま、UI と受信基盤を拡張する
+- 既存デコーダ (`NcomDecoder`, `StatusChannelDecoder`) は再利用し、入力ソースのみを切り替える
+- `ReceiverState` を拡張し、位置・姿勢精度と地図描画に必要な位置履歴を保持する
+
+### 11.2 実装項目詳細
+
+#### A) 位置精度・姿勢精度の表示追加（Channel 3 / 5）
+
+- `ReceiverState` に以下を追加:
+  - Position accuracy: North/East/Down, age
+  - Orientation accuracy: Heading/Pitch/Roll, age
+- 受信スレッドで `StatusChannelDecoder` の Channel 3/5 結果を同期コピー
+- `app.py` にメトリクス表示を追加:
+  - Position accuracy: m 表示
+  - Orientation accuracy: mrad 表示（内部は rad のまま保持）
+- `age >= 150` の場合に stale 注記を表示
+
+#### B) マップ表示（位置トレース）
+
+- `ReceiverState` に最新位置 (`latitude_deg`, `longitude_deg`) と位置履歴 (`position_history`) を追加
+- 各デコードパケットで `latitude/longitude`（rad）を degree に変換して保存
+- UI に `st.map()` セクションを追加:
+  - 最新位置を強調表示
+  - 直近の軌跡（一定件数）を地図に描画
+  - 位置未受信時はプレースホルダ文言を表示
+
+#### C) NCOM録画ファイル再生（ファイル入力モード）
+
+- 新規にファイル再生スレッドを追加（UDP受信スレッドと同等の更新ロジックを共有）
+- 入力モードを `UDP` / `Playback` で切替可能にする
+- Playback モード要件:
+  - `.ncom` / `.bin` などのバイナリファイルを読み込み
+  - 72バイト固定長を基本にパケット分割し、同期ズレ時は `0xE7` 探索で復帰
+  - 再生速度倍率（例: 0.5x, 1x, 2x）を指定可能
+  - ループ再生 ON/OFF を指定可能
+- 再生中の状態は既存 UI（精度/GAD/CAN/地図）に同一形式で反映
+
+### 11.3 テスト追加方針
+
+- 既存デコーダテストに加え、以下を追加:
+  - Channel 3/5 の値反映テスト（変換・age）
+  - 録画再生用のパケット抽出ロジックテスト（連続72バイト／同期復帰）
+- `tests/fake_ncom_sender.py` は既存の UDP 検証用途として継続利用
+
+### 11.4 継続して将来候補とする項目
+
+2. **CSVエクスポート** — accuracy_history を pandas DataFrame として保存  
+3. **アラート閾値の設定** — 精度がN mm/sを超えたら通知  
+6. **Innovation 時系列グラフ** — Channel 95 の innovation を時系列で表示  
 7. **マルチユーザー対応** — シングルトン受信スレッド + Pub/Sub配信
