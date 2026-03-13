@@ -126,6 +126,73 @@ def test_decode_ch95_gad_info() -> None:
     assert info.innovations[0] is not None
 
 
+def test_decode_ch1_kf_innovations_set1() -> None:
+    # bytes encode: valid bit (lsb) + signed 7-bit in bits[1:7]
+    status_data = bytes(
+        [
+            0b00010101,  # +1.0
+            0b00011101,  # +1.4
+            0b00100101,  # +1.8
+            0b00000111,  # +0.3
+            0b00001111,  # +0.7
+            0b00010111,  # +1.1
+            0b00011111,  # +1.5
+            0b00100111,  # +1.9
+        ]
+    )
+    decoder = NcomDecoder()
+    packet = decoder.decode(_make_packet(status_channel=1, status_data=status_data))
+    assert packet is not None
+
+    inn = decoder.status_decoder.kf_innovations_set1
+    assert math.isclose(inn["pos_x"], 1.0, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["pos_y"], 1.4, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["pos_z"], 1.8, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["vel_x"], 0.3, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["vel_y"], 0.7, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["vel_z"], 1.1, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["pitch"], 1.5, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["heading"], 1.9, rel_tol=0, abs_tol=1e-12)
+
+
+def test_decode_ch32_kf_innovations_set2() -> None:
+    status_data = bytes(
+        [
+            0b00000111,  # +0.3
+            0b00001111,  # +0.7
+            0b00010111,  # +1.1
+            0b00011111,  # +1.5
+            0b00100111,  # +1.9
+            0b00010100,  # invalid
+            0x00,
+            0x00,
+        ]
+    )
+    decoder = NcomDecoder()
+    packet = decoder.decode(_make_packet(status_channel=32, status_data=status_data))
+    assert packet is not None
+
+    inn = decoder.status_decoder.kf_innovations_set2
+    assert math.isclose(inn["zero_vel_x"], 0.3, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["zero_vel_y"], 0.7, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["zero_vel_z"], 1.1, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["no_slip_h"], 1.5, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(inn["heading_lock"], 1.9, rel_tol=0, abs_tol=1e-12)
+    assert inn["wheel_speed"] is None
+
+
+def test_decode_ch88_kf_innovations_set3() -> None:
+    status_data = bytes([0b00000111, 0b00001111, 0, 0, 0, 0, 0, 0])
+    decoder = NcomDecoder()
+    packet = decoder.decode(_make_packet(status_channel=88, status_data=status_data))
+    assert packet is not None
+
+    inn = decoder.status_decoder.kf_innovations_set3
+    assert math.isclose(inn["vertical_advanced_slip"], 0.3, rel_tol=0, abs_tol=1e-12)
+    assert inn["reserved_1"] is None
+    assert inn["reserved_7"] is None
+
+
 def test_decode_ch3_and_ch5_accuracy() -> None:
     decoder = NcomDecoder()
 
@@ -172,6 +239,8 @@ def test_reset_receiver_state() -> None:
     assert len(state.position_history) == 0
     assert state.playback_total_packets == 0
     assert state.playback_current_packet == 0
+    assert len(state.velocity_history) == 0
+    assert len(state.inn_pos_history) == 0
     # Caller controls whether to keep/clear errors.
     assert state.last_error == "x"
 

@@ -6,16 +6,22 @@ import struct
 import time
 from dataclasses import dataclass
 
-from .constants import ACCURACY_AGE_INVALID, ORI_ACC_SCALE, POS_ACC_SCALE, VEL_ACC_SCALE
+from .constants import (
+    ACCURACY_AGE_INVALID,
+    INNOVATION_SCALE,
+    ORI_ACC_SCALE,
+    POS_ACC_SCALE,
+    VEL_ACC_SCALE,
+)
 
 
 def decode_innovation(raw_byte: int) -> tuple[bool, float]:
-    """Decode channel-95 innovation byte into (is_valid, sigma)."""
+    """Decode innovation byte into (is_valid, sigma)."""
     is_valid = bool(raw_byte & 0x01)
     raw_value = raw_byte >> 1
     if raw_value >= 64:  # 7-bit two's complement
         raw_value -= 128
-    return is_valid, raw_value * 0.1
+    return is_valid, raw_value * INNOVATION_SCALE
 
 
 @dataclass(slots=True)
@@ -56,6 +62,30 @@ class StatusChannelDecoder:
     """Dispatcher/holder for decoded status channels."""
 
     def __init__(self) -> None:
+        self.kf_innovations_set1 = {
+            "pos_x": None,
+            "pos_y": None,
+            "pos_z": None,
+            "vel_x": None,
+            "vel_y": None,
+            "vel_z": None,
+            "pitch": None,
+            "heading": None,
+        }
+        self.kf_innovations_set2 = {
+            "zero_vel_x": None,
+            "zero_vel_y": None,
+            "zero_vel_z": None,
+            "no_slip_h": None,
+            "heading_lock": None,
+            "wheel_speed": None,
+        }
+        # Channel 88 (Table 77):
+        #   Byte0  : Vertical advanced slip innovation
+        #   Byte1-7: Reserved
+        self.kf_innovations_set3 = {"vertical_advanced_slip": None}
+        self.kf_innovations_set3.update({f"reserved_{i}": None for i in range(1, 8)})
+
         self.velocity_accuracy = {"north": None, "east": None, "down": None}
         self.velocity_accuracy_age = 255
 
@@ -125,8 +155,12 @@ class StatusChannelDecoder:
                     "orientation_accuracy": dict(self.orientation_accuracy),
                 }
             )
-        elif channel == 78:
-            summary.update({"can_status": dict(self.can_status)})
+        elif channel == 1:
+            summary.update({"kf_innovations_set1": dict(self.kf_innovations_set1)})
+        elif channel == 32:
+            summary.update({"kf_innovations_set2": dict(self.kf_innovations_set2)})
+        elif channel == 88:
+            summary.update({"kf_innovations_set3": dict(self.kf_innovations_set3)})
         elif channel == 95:
             stream_id = data[0]
             stream = self.gad_streams.get(stream_id)
@@ -138,7 +172,27 @@ class StatusChannelDecoder:
                     "gad_timestamp_ms": None if stream is None else stream.timestamp_ms,
                 }
             )
+        elif channel == 78:
+            summary.update({"can_status": dict(self.can_status)})
         return summary
+
+    def _decode_ch1_kf_innovations_set1(self, data: bytes) -> None:
+        keys = ("pos_x", "pos_y", "pos_z", "vel_x", "vel_y", "vel_z", "pitch", "heading")
+        for idx, key in enumerate(keys):
+            is_valid, sigma = decode_innovation(data[idx])
+            self.kf_innovations_set1[key] = sigma if is_valid else None
+
+    def _decode_ch32_kf_innovations_set2(self, data: bytes) -> None:
+        keys = ("zero_vel_x", "zero_vel_y", "zero_vel_z", "no_slip_h", "heading_lock", "wheel_speed")
+        for idx, key in enumerate(keys):
+            is_valid, sigma = decode_innovation(data[idx])
+            self.kf_innovations_set2[key] = sigma if is_valid else None
+
+    def _decode_ch88_kf_innovations_set3(self, data: bytes) -> None:
+        is_valid, sigma = decode_innovation(data[0])
+        self.kf_innovations_set3["vertical_advanced_slip"] = sigma if is_valid else None
+        for idx in range(1, 8):
+            self.kf_innovations_set3[f"reserved_{idx}"] = None
 
     def _decode_ch0_gnss_mode(self, data: bytes) -> None:
         num_sats = data[4]
@@ -204,10 +258,13 @@ class StatusChannelDecoder:
         )
 
     _handlers = {
+        1: _decode_ch1_kf_innovations_set1,
         0: _decode_ch0_gnss_mode,
         3: _decode_ch3_position_accuracy,
         4: _decode_ch4_velocity_accuracy,
         5: _decode_ch5_orientation_accuracy,
+        32: _decode_ch32_kf_innovations_set2,
         78: _decode_ch78_can_status,
+        88: _decode_ch88_kf_innovations_set3,
         95: _decode_ch95_gad_info,
     }

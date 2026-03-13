@@ -36,6 +36,38 @@ class ReceiverState:
     ori_acc_pitch: float | None = None
     ori_acc_roll: float | None = None
     ori_acc_age: int = 255
+    pos_acc_history: deque = field(default_factory=lambda: deque(maxlen=300))
+    ori_acc_history: deque = field(default_factory=lambda: deque(maxlen=300))
+
+    vel_north: float | None = None
+    vel_east: float | None = None
+    vel_down: float | None = None
+    heading: float | None = None
+    pitch: float | None = None
+    roll: float | None = None
+    velocity_history: deque = field(default_factory=lambda: deque(maxlen=600))
+    attitude_history: deque = field(default_factory=lambda: deque(maxlen=600))
+
+    inn_pos_x: float | None = None
+    inn_pos_y: float | None = None
+    inn_pos_z: float | None = None
+    inn_vel_x: float | None = None
+    inn_vel_y: float | None = None
+    inn_vel_z: float | None = None
+    inn_pitch: float | None = None
+    inn_heading: float | None = None
+    inn_zero_vel_x: float | None = None
+    inn_zero_vel_y: float | None = None
+    inn_zero_vel_z: float | None = None
+    inn_no_slip_h: float | None = None
+    inn_heading_h: float | None = None
+    inn_wspeed: float | None = None
+    inn_set3: dict[str, float | None] = field(
+        default_factory=lambda: {"vertical_advanced_slip": None, **{f"reserved_{i}": None for i in range(1, 8)}}
+    )
+    inn_pos_history: deque = field(default_factory=lambda: deque(maxlen=600))
+    inn_vel_history: deque = field(default_factory=lambda: deque(maxlen=600))
+    inn_att_history: deque = field(default_factory=lambda: deque(maxlen=600))
 
     gnss_pos_mode: int | None = None
     gnss_vel_mode: int | None = None
@@ -57,7 +89,9 @@ class ReceiverState:
 
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    altitude_m: float | None = None
     position_history: deque = field(default_factory=lambda: deque(maxlen=300))
+    position_value_history: deque = field(default_factory=lambda: deque(maxlen=600))
     playback_total_packets: int = 0
     playback_current_packet: int = 0
     diagnostics_enabled: bool = False
@@ -80,11 +114,42 @@ def reset_receiver_state(state: ReceiverState) -> None:
     state.pos_acc_east = None
     state.pos_acc_down = None
     state.pos_acc_age = 255
+    state.pos_acc_history.clear()
 
     state.ori_acc_heading = None
     state.ori_acc_pitch = None
     state.ori_acc_roll = None
     state.ori_acc_age = 255
+    state.ori_acc_history.clear()
+
+    state.vel_north = None
+    state.vel_east = None
+    state.vel_down = None
+    state.heading = None
+    state.pitch = None
+    state.roll = None
+    state.velocity_history.clear()
+    state.attitude_history.clear()
+
+    state.inn_pos_x = None
+    state.inn_pos_y = None
+    state.inn_pos_z = None
+    state.inn_vel_x = None
+    state.inn_vel_y = None
+    state.inn_vel_z = None
+    state.inn_pitch = None
+    state.inn_heading = None
+    state.inn_zero_vel_x = None
+    state.inn_zero_vel_y = None
+    state.inn_zero_vel_z = None
+    state.inn_no_slip_h = None
+    state.inn_heading_h = None
+    state.inn_wspeed = None
+    for key in state.inn_set3:
+        state.inn_set3[key] = None
+    state.inn_pos_history.clear()
+    state.inn_vel_history.clear()
+    state.inn_att_history.clear()
 
     state.gnss_pos_mode = None
     state.gnss_vel_mode = None
@@ -101,7 +166,9 @@ def reset_receiver_state(state: ReceiverState) -> None:
     state.last_packet_time = 0.0
     state.latitude_deg = None
     state.longitude_deg = None
+    state.altitude_m = None
     state.position_history.clear()
+    state.position_value_history.clear()
     state.playback_current_packet = 0
     state.playback_total_packets = 0
     state.diagnostics_buffer.clear()
@@ -150,6 +217,15 @@ def apply_decoder_snapshot(
     state.nav_status_code = packet.nav_status
     state.packet_count += 1
     state.last_packet_time = now
+    state.vel_north = packet.vel_north
+    state.vel_east = packet.vel_east
+    state.vel_down = packet.vel_down
+    state.heading = packet.heading
+    state.pitch = packet.pitch
+    state.roll = packet.roll
+    state.altitude_m = packet.altitude
+    state.velocity_history.append((now, packet.vel_north, packet.vel_east, packet.vel_down))
+    state.attitude_history.append((now, packet.heading, packet.pitch, packet.roll))
 
     va = status_decoder.velocity_accuracy
     if va["north"] is not None:
@@ -167,6 +243,7 @@ def apply_decoder_snapshot(
         state.pos_acc_east = pa["east"]
         state.pos_acc_down = pa["down"]
         state.pos_acc_age = status_decoder.position_accuracy_age
+        state.pos_acc_history.append((now, pa["north"], pa["east"], pa["down"]))
 
     oa = status_decoder.orientation_accuracy
     if oa["heading"] is not None:
@@ -174,6 +251,33 @@ def apply_decoder_snapshot(
         state.ori_acc_pitch = oa["pitch"]
         state.ori_acc_roll = oa["roll"]
         state.ori_acc_age = status_decoder.orientation_accuracy_age
+        state.ori_acc_history.append((now, oa["heading"], oa["pitch"], oa["roll"]))
+
+    inns1 = status_decoder.kf_innovations_set1
+    state.inn_pos_x = inns1["pos_x"]
+    state.inn_pos_y = inns1["pos_y"]
+    state.inn_pos_z = inns1["pos_z"]
+    state.inn_vel_x = inns1["vel_x"]
+    state.inn_vel_y = inns1["vel_y"]
+    state.inn_vel_z = inns1["vel_z"]
+    state.inn_pitch = inns1["pitch"]
+    state.inn_heading = inns1["heading"]
+    if any(v is not None for v in (inns1["pos_x"], inns1["pos_y"], inns1["pos_z"])):
+        state.inn_pos_history.append((now, inns1["pos_x"], inns1["pos_y"], inns1["pos_z"]))
+    if any(v is not None for v in (inns1["vel_x"], inns1["vel_y"], inns1["vel_z"])):
+        state.inn_vel_history.append((now, inns1["vel_x"], inns1["vel_y"], inns1["vel_z"]))
+    if any(v is not None for v in (inns1["pitch"], inns1["heading"])):
+        state.inn_att_history.append((now, inns1["pitch"], inns1["heading"]))
+
+    inns2 = status_decoder.kf_innovations_set2
+    state.inn_zero_vel_x = inns2["zero_vel_x"]
+    state.inn_zero_vel_y = inns2["zero_vel_y"]
+    state.inn_zero_vel_z = inns2["zero_vel_z"]
+    state.inn_no_slip_h = inns2["no_slip_h"]
+    state.inn_heading_h = inns2["heading_lock"]
+    state.inn_wspeed = inns2["wheel_speed"]
+
+    state.inn_set3 = dict(status_decoder.kf_innovations_set3)
 
     lat_deg = math.degrees(packet.latitude)
     lon_deg = math.degrees(packet.longitude)
@@ -187,6 +291,7 @@ def apply_decoder_snapshot(
         state.longitude_deg = lon_deg
         if not state.position_history or state.position_history[-1] != (lat_deg, lon_deg):
             state.position_history.append((lat_deg, lon_deg))
+        state.position_value_history.append((now, lat_deg, lon_deg, packet.altitude))
 
     if status_decoder.gnss_pos_mode is not None:
         state.gnss_pos_mode = status_decoder.gnss_pos_mode

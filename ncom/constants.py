@@ -16,6 +16,7 @@ VEL_ACC_SCALE = 1e-3  # 1 mm/s -> m/s
 POS_ACC_SCALE = 1e-3  # 1 mm -> m
 ORI_ACC_SCALE = 1e-5  # 0.01 mrad -> rad
 ACCURACY_AGE_INVALID = 150
+INNOVATION_SCALE = 0.1  # 0.1 sigma
 
 # Navigation status (Table 5)
 NAV_STATUS = {
